@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     BusinessConnectionHandler,
     BusinessMessagesDeletedHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 import config
 import db
@@ -32,6 +35,34 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _build_application() -> Application:
+    request = HTTPXRequest(
+        connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT,
+        read_timeout=config.TELEGRAM_READ_TIMEOUT,
+        write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+        pool_timeout=config.TELEGRAM_POOL_TIMEOUT,
+        proxy=config.TELEGRAM_PROXY_URL,
+    )
+    get_updates_request = HTTPXRequest(
+        connect_timeout=config.TELEGRAM_CONNECT_TIMEOUT,
+        read_timeout=config.TELEGRAM_GET_UPDATES_READ_TIMEOUT,
+        write_timeout=config.TELEGRAM_WRITE_TIMEOUT,
+        pool_timeout=config.TELEGRAM_POOL_TIMEOUT,
+        proxy=config.TELEGRAM_PROXY_URL,
+    )
+
+    builder = (
+        Application.builder()
+        .token(config.BOT_TOKEN)
+        .request(request)
+        .get_updates_request(get_updates_request)
+        .post_init(post_init)
+    )
+    if config.TELEGRAM_PROXY_URL:
+        logger.info("Используется прокси для Telegram API")
+    return builder.build()
+
+
 async def _retention_loop() -> None:
     await asyncio.sleep(30)
     while True:
@@ -47,15 +78,20 @@ async def post_init(_application: Application) -> None:
     asyncio.create_task(_retention_loop())
 
 
+async def on_error(
+    update: object, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    error = context.error
+    if isinstance(error, (TimedOut, NetworkError)):
+        logger.warning("Таймаут/сеть Telegram (бот продолжает работу): %s", error)
+        return
+    logger.error("Ошибка обработки update: %s", error, exc_info=error)
+
+
 def main() -> None:
     db.init_db()
 
-    application = (
-        Application.builder()
-        .token(config.BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+    application = _build_application()
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
@@ -71,6 +107,7 @@ def main() -> None:
     application.add_handler(
         BusinessMessagesDeletedHandler(on_deleted_business_messages)
     )
+    application.add_error_handler(on_error)
 
     allowed = [
         "business_connection",
@@ -80,8 +117,16 @@ def main() -> None:
         "message",
     ]
 
-    logger.info("Бот запущен (хранение кэша: %s дн.)", config.RETENTION_DAYS)
-    application.run_polling(allowed_updates=allowed)
+    logger.info(
+        "SpyBot запущен | python-telegram-bot | кэш %s дн.",
+        config.RETENTION_DAYS,
+    )
+    application.run_polling(
+        allowed_updates=allowed,
+        drop_pending_updates=True,
+        bootstrap_retries=-1,
+        close_loop=False,
+    )
 
 
 if __name__ == "__main__":
