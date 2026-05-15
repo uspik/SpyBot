@@ -33,6 +33,7 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+_retention_task: asyncio.Task | None = None
 
 
 def _build_application() -> Application:
@@ -57,6 +58,7 @@ def _build_application() -> Application:
         .request(request)
         .get_updates_request(get_updates_request)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
     )
     if config.TELEGRAM_PROXY_URL:
         logger.info("Используется прокси для Telegram API")
@@ -74,8 +76,20 @@ async def _retention_loop() -> None:
 
 
 async def post_init(_application: Application) -> None:
+    global _retention_task
     perform_retention_cleanup()
-    asyncio.create_task(_retention_loop())
+    _retention_task = asyncio.create_task(_retention_loop())
+
+
+async def post_shutdown(_application: Application) -> None:
+    global _retention_task
+    if _retention_task and not _retention_task.done():
+        _retention_task.cancel()
+        try:
+            await _retention_task
+        except asyncio.CancelledError:
+            pass
+    _retention_task = None
 
 
 async def on_error(

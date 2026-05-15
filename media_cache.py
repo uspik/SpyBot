@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from telegram import Message
-from telegram.error import TelegramError
+from telegram.error import NetworkError, TelegramError, TimedOut
 from telegram.ext import ContextTypes
 
 from config import MEDIA_DIR
@@ -36,49 +36,60 @@ def message_has_file_media(message: Message) -> bool:
 async def download_message_media(
     context: ContextTypes.DEFAULT_TYPE, message: Message
 ) -> Path | None:
-    if not message_has_file_media(message):
+    if not message_has_file_media(message) or not message.business_connection_id:
         return None
 
-    tg_file = None
     ext = ".bin"
-
-    if message.photo:
-        tg_file = await message.photo[-1].get_file()
-        ext = ".jpg"
-    elif message.video:
-        tg_file = await message.video.get_file()
-        ext = Path(message.video.file_name or ".mp4").suffix or ".mp4"
-    elif message.voice:
-        tg_file = await message.voice.get_file()
-        ext = ".ogg"
-    elif message.audio:
-        tg_file = await message.audio.get_file()
-        ext = Path(message.audio.file_name or ".mp3").suffix or ".mp3"
-    elif message.document:
-        tg_file = await message.document.get_file()
-        ext = Path(message.document.file_name or ".bin").suffix or ".bin"
-    elif message.animation:
-        tg_file = await message.animation.get_file()
-        ext = ".mp4"
-    elif message.video_note:
-        tg_file = await message.video_note.get_file()
-        ext = ".mp4"
-
-    if tg_file is None:
-        return None
-
-    if not message.business_connection_id:
-        return None
-
-    path = local_media_path(
-        message.business_connection_id, message.chat_id, message.message_id
-    ).with_suffix(ext)
+    file_ref = None
 
     try:
+        if message.photo:
+            file_ref = message.photo[-1]
+            ext = ".jpg"
+        elif message.video:
+            file_ref = message.video
+            ext = Path(message.video.file_name or ".mp4").suffix or ".mp4"
+        elif message.voice:
+            file_ref = message.voice
+            ext = ".ogg"
+        elif message.audio:
+            file_ref = message.audio
+            ext = Path(message.audio.file_name or ".mp3").suffix or ".mp3"
+        elif message.document:
+            file_ref = message.document
+            ext = Path(message.document.file_name or ".bin").suffix or ".bin"
+        elif message.animation:
+            file_ref = message.animation
+            ext = ".mp4"
+        elif message.video_note:
+            file_ref = message.video_note
+            ext = ".mp4"
+
+        if file_ref is None:
+            return None
+
+        path = local_media_path(
+            message.business_connection_id, message.chat_id, message.message_id
+        ).with_suffix(ext)
+
+        tg_file = await file_ref.get_file()
         await tg_file.download_to_drive(custom_path=str(path))
         return path
+    except (TimedOut, NetworkError) as exc:
+        logger.warning(
+            "Таймаут при кэшировании медиа (chat=%s msg=%s): %s",
+            message.chat_id,
+            message.message_id,
+            exc,
+        )
+        return None
     except TelegramError as exc:
-        logger.warning("Не удалось скачать медиа %s: %s", path, exc)
+        logger.warning(
+            "Не удалось скачать медиа (chat=%s msg=%s): %s",
+            message.chat_id,
+            message.message_id,
+            exc,
+        )
         return None
 
 
