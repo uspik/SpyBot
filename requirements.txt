@@ -1,2 +1,3 @@
+# Python 3.9+ (на VPS: python3 --version)
 python-telegram-bot>=21.10,<23
 python-dotenv>=1.0.0
