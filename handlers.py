@@ -215,20 +215,19 @@ async def _store_message(context: ContextTypes.DEFAULT_TYPE, message: Message) -
 
     user = message.from_user
     from_user_id = user.id if user else None
-    is_foreign = db.is_foreign_message(message.business_connection_id, from_user_id)
 
     media_path: str | None = None
-    if is_foreign:
-        if media_cache.message_has_file_media(message):
-            downloaded = await media_cache.download_message_media(context, message)
-            if downloaded:
-                media_path = str(downloaded)
-        elif message.edit_date:
-            old = db.get_message(
-                message.business_connection_id, message.chat.id, message.message_id
-            )
-            if old and old["media_path"]:
-                media_path = old["media_path"]
+    if media_cache.message_has_file_media(message):
+        downloaded = await media_cache.download_message_media(context, message)
+        if downloaded:
+            media_path = str(downloaded)
+
+    if media_path is None:
+        old = db.get_message(
+            message.business_connection_id, message.chat.id, message.message_id
+        )
+        if old and old["media_path"]:
+            media_path = old["media_path"]
 
     replaced = db.save_message(
         business_connection_id=message.business_connection_id,
@@ -242,7 +241,6 @@ async def _store_message(context: ContextTypes.DEFAULT_TYPE, message: Message) -
         content=message_content(message),
         message_date=message.date,
         media_path=media_path,
-        keep_media_path=not is_foreign,
     )
     if replaced:
         media_cache.remove_media_file(replaced)
